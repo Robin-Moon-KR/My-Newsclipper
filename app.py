@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 import feedparser
@@ -29,7 +29,31 @@ def index():
             button { padding: 10px 20px; background-color: #007bff; color: white; border: none; border-radius: 5px; font-size: 16px; cursor: pointer; }
             button:hover { background-color: #0056b3; }
             .tags { margin-top: 10px; }
-            .tag { display: inline-block; background: #e9ecef; padding: 5px 12px; border-radius: 15px; margin-right: 5px; margin-bottom: 5px; font-size: 14px; }
+            .tag { 
+                display: inline-flex; 
+                align-items: center; 
+                background: #e9ecef; 
+                padding: 6px 12px; 
+                border-radius: 16px; 
+                margin-right: 6px; 
+                margin-bottom: 6px; 
+                font-size: 14px; 
+            }
+            .tag .delete-btn {
+                background: none;
+                border: none;
+                margin-left: 6px;
+                cursor: pointer;
+                font-size: 14px;
+                color: #868e96;
+                padding: 0;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+            }
+            .tag .delete-btn:hover {
+                color: #fa5252;
+            }
             .source-badge { display: inline-block; background: #e2e3e5; color: #383d41; padding: 2px 8px; border-radius: 4px; font-size: 11px; margin-right: 5px; }
             .news-card { border-bottom: 1px solid #eee; padding: 15px 0; }
             .news-card h3 { margin: 0 0 5px 0; font-size: 18px; }
@@ -50,7 +74,7 @@ def index():
 
             <div class="section">
                 <h3>관심 키워드 관리</h3>
-                <input type="text" id="keywordInput" placeholder="추가할 키워드 입력 (예: AI, 미디어 서버)">
+                <input type="text" id="keywordInput" placeholder="추가할 키워드 입력 (예: AI, 미디어 서버)" onkeypress="if(event.key === 'Enter') addKeyword()">
                 <button onclick="addKeyword()">키워드 추가</button>
                 <div class="tags" id="tagList"></div>
             </div>
@@ -69,18 +93,31 @@ def index():
                 const res = await fetch('/keywords');
                 const data = await res.json();
                 const tagList = document.getElementById('tagList');
-                tagList.innerHTML = data.keywords.map(k => `<span class="tag">#${k}</span>`).join('');
+                tagList.innerHTML = data.keywords.map(k => `
+                    <span class="tag">
+                        #${k}
+                        <button type="button" class="delete-btn" onclick="deleteKeyword('${k}')">×</button>
+                    </span>
+                `).join('');
             }
 
             async function addKeyword() {
                 const input = document.getElementById('keywordInput');
-                if (!input.value) return;
+                if (!input.value.trim()) return;
                 await fetch('/keywords', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ keyword: input.value })
+                    body: JSON.stringify({ keyword: input.value.trim() })
                 });
                 input.value = '';
+                fetchKeywords();
+                loadNews();
+            }
+
+            async function deleteKeyword(keyword) {
+                await fetch(`/keywords/${encodeURIComponent(keyword)}`, {
+                    method: 'DELETE'
+                });
                 fetchKeywords();
                 loadNews();
             }
@@ -125,23 +162,25 @@ def add_keyword(req: KeywordRequest):
         keywords_db.append(req.keyword)
     return {"keywords": keywords_db}
 
+@app.delete("/keywords/{keyword}")
+def delete_keyword(keyword: str):
+    if keyword in keywords_db:
+        keywords_db.remove(keyword)
+    return {"keywords": keywords_db}
+
 @app.get("/news")
 def get_filtered_news():
     collected_news = []
     seen_links = set()
 
-    # 사용자가 요청한 미디어 사이트 도메인/매체명 필터 옵션
-    target_media_filters = ["zdnet", "etnews", "cnet", "오디오", "smpte", "방송기술"]
-
     for kw in keywords_db:
-        # 구글 뉴스 검색 RSS를 통해 전문 매체들의 기사를 포괄적으로 수집
         encoded_kw = urllib.parse.quote(kw)
         rss_url = f"https://news.google.com/rss/search?q={encoded_kw}&hl=ko&gl=KR&ceid=KR:ko"
         
         try:
             feed = feedparser.parse(rss_url)
             
-            for entry in feed.entries[:10]: # 키워드별 상위 10개 기사 검토
+            for entry in feed.entries[:10]:
                 link = entry.link
                 if link in seen_links:
                     continue
@@ -157,8 +196,6 @@ def get_filtered_news():
                     title = parts[0].strip()
                     source = parts[1].strip()
 
-                # 요청하신 매체(ZDNet, 전자신문, Cnet, 월간오디오, SMPTE, 방송기술저널 등)와 연관성이 높거나
-                # 전체 최신 뉴스를 같이 보여주도록 수집 (원하는 경우 특정 매체만 필터링할 수도 있습니다)
                 seen_links.add(link)
                 collected_news.append({
                     "title": title,
